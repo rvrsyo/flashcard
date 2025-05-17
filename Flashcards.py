@@ -1,410 +1,383 @@
-import sys
-# import json # No longer needed for primary data storage
-import random
-import os
+import sqlite3
+import tkinter as tk
+from tkinter import ttk
+from tkinter import messagebox
+from ttkbootstrap import Style
+import random # Import the random module for shuffling
+from PIL import Image, ImageTk # Import Image and ImageTk from Pillow
 
-# --- PyQt5 Imports ---
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFileDialog, QMessageBox, QAction, QDialog,
-    QLineEdit, QTextEdit, QListWidget, QListWidgetItem, QDialogButtonBox,
-    QSizePolicy
-)
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QFont
+# Create database tables if they don't exist
+def create_tables(conn):
+    cursor = conn.cursor()
 
+    # Create flashcard_sets table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS flashcard_sets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL
+        )
+    ''')
 
-# --- Data Handling Constants ---
-FLASHCARD_FILE = 'flashcards.txt' # Default .txt file to try loading
-CARD_SEPARATOR_LINE = "%%%"       # Separator for the text file format
+    # Create flashcards table with foreign key reference to flashcard_sets
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS flashcards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            set_id INTEGER NOT NULL,
+            word TEXT NOT NULL,
+            definition TEXT NOT NULL,
+            FOREIGN KEY (set_id) REFERENCES flashcard_sets(id)
+        )
+    ''')
 
-# --- Data Handling Functions ---
-def load_flashcards_data(filename=FLASHCARD_FILE):
-    """Loads flashcards from a custom text file."""
-    flashcards = []
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            current_term = None
-            current_definition_lines = []
-            for line in f:
-                stripped_line = line.strip()
-                if stripped_line == CARD_SEPARATOR_LINE:
-                    if current_term is not None: # Finalize the previous card
-                        definition = "\n".join(current_definition_lines).strip()
-                        flashcards.append({"term": current_term, "definition": definition})
-                        current_term = None
-                        current_definition_lines = []
-                elif current_term is None: # This line is a new term
-                    if stripped_line: # Make sure term is not an empty line
-                        current_term = stripped_line
-                else: # This line is part of the current definition
-                    current_definition_lines.append(line.rstrip('\n'))
+# Add a new flashcard set to the database
+def add_set(conn, name):
+    cursor = conn.cursor()
 
-            # Add the last card if the file doesn't end with a separator
-            if current_term is not None:
-                definition = "\n".join(current_definition_lines).strip()
-                flashcards.append({"term": current_term, "definition": definition})
+    # Insert the set name into flashcard_sets table
+    cursor.execute('''
+        INSERT INTO flashcard_sets (name)
+        VALUES (?)
+    ''', (name,))
 
-        if not flashcards and os.path.exists(filename) and os.path.getsize(filename) > 0:
-            # File existed and had content, but nothing was parsed
-            QMessageBox.warning(None, "Load Error", f"No valid flashcards found in '{filename}'. Please check the format.")
-            return [] # Return empty list, not defaults
-        return flashcards
+    set_id = cursor.lastrowid
+    conn.commit()
 
-    except FileNotFoundError:
-        print(f"Info: File '{filename}' not found. Starting with no cards loaded.")
-        return [] # Return empty list, not defaults
-    except Exception as e:
-        QMessageBox.critical(None, "Load Error", f"An error occurred parsing '{filename}': {e}. Starting with no cards.")
-        return [] # Return empty list
+    return set_id
 
-def get_default_cards():
-    """Returns an empty list as there are no built-in default cards."""
-    return []
+# Function to add a flashcard to the database
+def add_card(conn, set_id, word, definition):
+    cursor = conn.cursor()
 
-def save_flashcards_data(flashcards, filename=FLASHCARD_FILE):
-    """Saves the current flashcards to a custom text file."""
-    try:
-        with open(filename, 'w', encoding='utf-8') as f:
-            for i, card in enumerate(flashcards):
-                f.write(card.get("term", "Unnamed Term").strip() + "\n")
-                f.write(card.get("definition", "").strip())
-                if i < len(flashcards) - 1:
-                    f.write("\n" + CARD_SEPARATOR_LINE + "\n")
-                elif card.get("term","").strip():
-                     f.write("\n")
-        return True
-    except Exception as e:
-        QMessageBox.critical(None, "Save Error", f"Error saving flashcards to '{filename}': {e}")
-        return False
+    # Execute SQL query to insert a new flashcard into the database
+    cursor.execute('''
+        INSERT INTO flashcards (set_id, word, definition)
+        VALUES (?, ?, ?)
+    ''', (set_id, word, definition))
 
-# --- Dialog for Adding New Cards ---
-class AddCardDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Add New Flashcard")
-        self.setMinimumWidth(400)
+    # Get the ID of the newly inserted card
+    card_id = cursor.lastrowid
+    conn.commit()
 
-        layout = QVBoxLayout(self)
-        self.term_label = QLabel("Term:")
-        self.term_input = QLineEdit()
-        layout.addWidget(self.term_label)
-        layout.addWidget(self.term_input)
+    return card_id
 
-        self.def_label = QLabel("Definition:")
-        self.def_input = QTextEdit()
-        self.def_input.setAcceptRichText(False)
-        layout.addWidget(self.def_label)
-        layout.addWidget(self.def_input)
+# Function to retrieve all flashcard sets from the database
+def get_sets(conn):
+    cursor = conn.cursor()
 
-        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        layout.addWidget(self.button_box)
-        self.setLayout(layout)
+    # Execite SQL query to fetch all flashcard sets
+    cursor.execute('''
+        SELECT id, name FROM flashcard_sets
+    ''')
 
-    def get_data(self):
-        """Returns the entered term and definition."""
-        term = self.term_input.text().strip()
-        definition = self.def_input.toPlainText().strip()
-        if term:
-            return {"term": term, "definition": definition}
-        return None
+    rows = cursor.fetchall()
+    sets = {row[1]: row[0] for row in rows} # Create a dictionary of sets (name: id)
 
-# --- Dialog for Viewing All Cards ---
-class ViewCardsDialog(QDialog):
-    def __init__(self, flashcards, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("View All Flashcards")
-        self.setMinimumSize(500, 400)
+    return sets
 
-        layout = QVBoxLayout(self)
-        self.list_widget = QListWidget()
-        if not flashcards:
-            self.list_widget.addItem("No flashcards available.")
+# Function to retrieve all flashcards of a specific set
+def get_cards(conn, set_id):
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT word, definition FROM flashcards
+        WHERE set_id = ?
+    ''', (set_id,))
+
+    rows = cursor.fetchall()
+    cards = [(row[0], row[1]) for row in rows] # Create a list of cards (word, definition)
+
+    return cards
+
+# Function to delete a flashcard set from the database
+def delete_set(conn, set_id):
+    cursor = conn.cursor()
+
+    # Execute SQL query to delete a flashcard set
+    cursor.execute('''
+        DELETE FROM flashcard_sets
+        WHERE id = ?
+    ''', (set_id,))
+
+    conn.commit()
+    sets_combobox.set('')
+    clear_flashcard_display()
+    populate_sets_combobox()
+
+    # Clear the current_cards list and reset card_index
+    global current_cards, card_index
+    current_cards = []
+    card_index = 0
+
+# Function to create a new flashcard set
+def create_set():
+    set_name = set_name_var.get()
+    if set_name:
+        if set_name not in get_sets(conn):
+            set_id = add_set(conn, set_name)
+            populate_sets_combobox()
+            set_name_var.set('')
+
+            # Clear the input fields
+            set_name_var.set('')
+            word_var.set('')
+            definition_var.set('')
+
+def add_word():
+    set_name = set_name_var.get()
+    word = word_var.get()
+    definition = definition_var.get()
+
+    if set_name and word and definition:
+        if set_name not in get_sets(conn):
+            set_id = add_set(conn, set_name)
         else:
-            for i, card in enumerate(flashcards):
-                # Assuming cards are dicts with 'term' and 'definition'
-                item_text = f"{i + 1}. Term: {card.get('term', 'N/A')}\n   Definition: {card.get('definition', 'N/A')}"
-                list_item = QListWidgetItem(item_text)
-                self.list_widget.addItem(list_item)
-        layout.addWidget(self.list_widget)
+            set_id = get_sets(conn)[set_name]
 
-        self.close_button = QPushButton("Close")
-        self.close_button.clicked.connect(self.accept)
-        layout.addWidget(self.close_button, alignment=Qt.AlignRight)
-        self.setLayout(layout)
+        add_card(conn, set_id, word, definition)
 
-# --- Main Application Window ---
-class FlashcardApp(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.flashcards = []
-        self.current_deck = []
-        self.current_index = -1
-        self.definition_visible = False
-        self.dirty_flag = False # To track unsaved changes if cards are added/modified
+        word_var.set('')
+        definition_var.set('')
 
-        self.initUI()
-        # Try to load the default file on startup
-        self.flashcards = load_flashcards_data(FLASHCARD_FILE)
-        self.update_initial_display()
+        populate_sets_combobox()
 
+def populate_sets_combobox():
+    sets_combobox['values'] = tuple(get_sets(conn).keys())
 
-    def initUI(self):
-        self.setWindowTitle("PyQt5 Flashcard App (TXT File)")
-        self.setGeometry(100, 100, 600, 400)
+# Function to delete a selected flashcard set
+def delete_selected_set():
+    set_name = sets_combobox.get()
 
-        central_widget = QWidget(self)
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+    if set_name:
+        result = messagebox.askyesno(
+            'Confirmation', f'Are you sure you want to delete the "{set_name}" set?'
+        )
 
-        self.card_display = QLabel("Load a .txt flashcard file or add new cards!")
-        self.card_display.setAlignment(Qt.AlignCenter)
-        self.card_display.setFont(QFont('Arial', 18))
-        self.card_display.setWordWrap(True)
-        self.card_display.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        main_layout.addWidget(self.card_display)
+        if result == tk.YES:
+            set_id = get_sets(conn)[set_name]
+            delete_set(conn, set_id)
+            populate_sets_combobox()
+            clear_flashcard_display()
 
-        self.status_label = QLabel("Card: - / -")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(self.status_label)
+def select_set():
+    set_name = sets_combobox.get()
 
-        button_layout = QHBoxLayout()
-        self.start_button = QPushButton("Shuffle & Start")
-        self.start_button.clicked.connect(self.start_session)
-        self.reveal_button = QPushButton("Reveal Definition")
-        self.reveal_button.clicked.connect(self.reveal_definition)
-        self.reveal_button.setEnabled(False)
-        self.next_button = QPushButton("Next Card")
-        self.next_button.clicked.connect(self.next_card)
-        self.next_button.setEnabled(False)
+    if set_name:
+        set_id = get_sets(conn)[set_name]
+        cards = get_cards(conn, set_id)
 
-        button_layout.addWidget(self.start_button)
-        button_layout.addWidget(self.reveal_button)
-        button_layout.addWidget(self.next_button)
-        main_layout.addLayout(button_layout)
-
-        self.create_menu_bar()
-        central_widget.setLayout(main_layout)
-        self.update_status() # Initial status update
-
-    def update_initial_display(self):
-        if self.flashcards:
-             self.card_display.setText(f"Loaded {len(self.flashcards)} cards from '{FLASHCARD_FILE}'.\nPress 'Shuffle & Start'.")
+        if cards:
+            display_flashcards(cards)
+            # Automatically shuffle when a new set is selected
+            shuffle_cards()
         else:
-             self.card_display.setText("No cards loaded. Use 'File > Load' or 'Cards > Add'.")
-        self.update_ui_state()
+            word_label.config(text="No cards in this set")
+            definition_label.config(text='')
+    else:
+        # Clear the current cards list and reset card index
+        global current_cards, card_index
+        current_cards = []
+        card_index = 0
+        clear_flashcard_display()
 
+def display_flashcards(cards):
+    global card_index
+    global current_cards
 
-    def create_menu_bar(self):
-        menu_bar = self.menuBar()
-        file_menu = menu_bar.addMenu('&File')
+    card_index = 0
+    current_cards = cards
 
-        load_action = QAction('&Load Cards...', self)
-        load_action.setShortcut('Ctrl+O')
-        load_action.triggered.connect(self.load_cards_action_triggered)
-        file_menu.addAction(load_action)
+    # Clear the display
+    if not cards:
+        clear_flashcard_display()
+    else:
+        show_card()
 
-        save_action = QAction('&Save Cards', self)
-        save_action.setShortcut('Ctrl+S')
-        save_action.triggered.connect(self.save_cards_action_triggered)
-        file_menu.addAction(save_action)
+    show_card()
 
-        save_as_action = QAction('Save Cards &As...', self)
-        save_as_action.setShortcut('Ctrl+Shift+S')
-        save_as_action.triggered.connect(self.save_cards_as_action_triggered)
-        file_menu.addAction(save_as_action)
+def clear_flashcard_display():
+    word_label.config(text='')
+    definition_label.config(text='')
 
-        file_menu.addSeparator()
-        exit_action = QAction('&Exit', self)
-        exit_action.setShortcut('Ctrl+Q')
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+# Function to display the current flashcards word
+def show_card():
+    global card_index
+    global current_cards
 
-        card_menu = menu_bar.addMenu('&Cards')
-        add_action = QAction('&Add New Card...', self)
-        add_action.setShortcut('Ctrl+N')
-        add_action.triggered.connect(self.add_card_dialog_triggered)
-        card_menu.addAction(add_action)
-
-        view_action = QAction('&View All Cards...', self)
-        view_action.triggered.connect(self.view_cards_dialog_triggered)
-        card_menu.addAction(view_action)
-
-        help_menu = menu_bar.addMenu('&Help')
-        about_action = QAction('&About', self)
-        about_action.triggered.connect(self.show_about_dialog_triggered)
-        help_menu.addAction(about_action)
-
-    def load_cards_action_triggered(self):
-        if self.dirty_flag:
-            reply = QMessageBox.question(self, 'Unsaved Changes',
-                                       "You have unsaved changes. Load new file anyway?",
-                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.No:
-                return
-
-        options = QFileDialog.Options()
-        fileName, _ = QFileDialog.getOpenFileName(self, "Load Flashcards from Text File", "",
-                                                  "Text Files (*.txt);;All Files (*)", options=options)
-        if fileName:
-            loaded_cards = load_flashcards_data(fileName)
-            if loaded_cards is not None: # load_flashcards_data returns [] on error/not found
-                self.flashcards = loaded_cards
-                self.current_deck = []
-                self.current_index = -1
-                self.definition_visible = False
-                self.dirty_flag = False # Reset dirty flag after successful load
-                self.update_ui_state()
-                if self.flashcards:
-                    self.card_display.setText(f"Loaded {len(self.flashcards)} cards from '{os.path.basename(fileName)}'.\nPress 'Shuffle & Start'.")
-                    QMessageBox.information(self, "Load Successful", f"Loaded {len(self.flashcards)} cards from {os.path.basename(fileName)}.")
-                else: # File was valid but empty, or parsing resulted in no cards
-                    self.card_display.setText(f"No cards found in '{os.path.basename(fileName)}'. Add new cards or load another file.")
-                    QMessageBox.information(self, "Load Info", f"No flashcards were found in '{os.path.basename(fileName)}'.")
-            # If load_flashcards_data returned None (shouldn't with current logic, returns []), handle explicitly if needed
-        # else: User cancelled dialog, do nothing to current flashcards
-
-    def save_cards_action_triggered(self):
-        if not self.flashcards:
-            QMessageBox.information(self, "No Cards", "There are no cards to save.")
-            return
-        if save_flashcards_data(self.flashcards, FLASHCARD_FILE): # Save to default file
-             self.dirty_flag = False
-             QMessageBox.information(self, "Save Successful", f"Saved {len(self.flashcards)} cards to {FLASHCARD_FILE}.")
-
-    def save_cards_as_action_triggered(self):
-        if not self.flashcards:
-            QMessageBox.information(self, "No Cards", "There are no cards to save.")
-            return
-        options = QFileDialog.Options()
-        fileName, _ = QFileDialog.getSaveFileName(self, "Save Flashcards As...", "",
-                                                  "Text Files (*.txt);;All Files (*)", options=options)
-        if fileName:
-            if not fileName.lower().endswith('.txt'):
-                fileName += '.txt'
-            if save_flashcards_data(self.flashcards, fileName):
-                self.dirty_flag = False
-                QMessageBox.information(self, "Save Successful", f"Saved {len(self.flashcards)} cards to {os.path.basename(fileName)}.")
-
-    def add_card_dialog_triggered(self):
-        dialog = AddCardDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
-            new_card_data = dialog.get_data()
-            if new_card_data:
-                if any(card['term'].lower() == new_card_data['term'].lower() for card in self.flashcards):
-                     QMessageBox.warning(self, "Duplicate Term", f"The term '{new_card_data['term']}' already exists. Card not added.")
-                else:
-                    self.flashcards.append(new_card_data)
-                    self.dirty_flag = True
-                    self.update_ui_state()
-                    if not self.current_deck: # If no session was active, update display
-                        self.card_display.setText(f"Card '{new_card_data['term']}' added. Press 'Shuffle & Start'.")
-                    QMessageBox.information(self, "Card Added", f"Card '{new_card_data['term']}' added successfully.")
-            else:
-                 QMessageBox.warning(self, "Input Error", "Term must be provided.")
-
-    def view_cards_dialog_triggered(self):
-        if not self.flashcards:
-            QMessageBox.information(self, "No Cards", "There are no cards to view. Load or add some first.")
-            return
-        dialog = ViewCardsDialog(self.flashcards, self)
-        dialog.exec_()
-
-    def show_about_dialog_triggered(self):
-        QMessageBox.about(self, "About Flashcard App",
-                          "Simple Flashcard Application\nVersion 1.2 (TXT File Only)\n\n"
-                          "Helps you study terms and definitions from text files.")
-
-    def start_session(self):
-        if not self.flashcards:
-            QMessageBox.warning(self, "No Cards", "Please load a .txt file or add some flashcards first.")
-            return
-
-        self.current_deck = self.flashcards[:]
-        random.shuffle(self.current_deck)
-        self.current_index = 0
-        self.definition_visible = False
-        self.display_current_card()
-        self.update_ui_state()
-
-    def reveal_definition(self):
-        if self.current_index != -1 and self.current_deck:
-            self.definition_visible = True
-            self.display_current_card()
-            self.update_ui_state()
-
-    def next_card(self):
-        if self.current_index != -1 and self.current_deck:
-            self.current_index += 1
-            if self.current_index < len(self.current_deck):
-                self.definition_visible = False
-                self.display_current_card()
-            else:
-                self.card_display.setText("🎉 Deck Finished! 🎉\n\nPress 'Shuffle & Start' or load new cards.")
-                self.current_index = -1 # Reset index
-                # self.current_deck = [] # Optionally clear current deck
-            self.update_ui_state()
-
-    def display_current_card(self):
-        if 0 <= self.current_index < len(self.current_deck):
-            card = self.current_deck[self.current_index]
-            display_text = f"Term:\n\n{card['term']}"
-            if self.definition_visible:
-                display_text += f"\n\n{'-'*20}\n\nDefinition:\n\n{card['definition']}"
-            self.card_display.setText(display_text)
-        elif not self.current_deck and self.flashcards:
-             self.card_display.setText("Press 'Shuffle & Start' to begin.")
-        elif not self.flashcards:
-             self.card_display.setText("No cards loaded. Use 'File > Load' or 'Cards > Add'.")
-        self.update_status()
-
-
-    def update_status(self):
-        total_in_session = len(self.current_deck) if self.current_deck else 0
-        current_num_in_session = self.current_index + 1 if self.current_index != -1 and self.current_deck else 0
-        total_all = len(self.flashcards)
-        status_text = f"Card: {current_num_in_session} / {total_in_session} (in session) | Total loaded: {total_all}"
-        if self.dirty_flag:
-             status_text += " *"
-        self.status_label.setText(status_text)
-
-    def update_ui_state(self):
-        """Enable/disable buttons based on the application state."""
-        has_cards = bool(self.flashcards)
-        in_session = self.current_index != -1 and bool(self.current_deck)
-
-        self.start_button.setEnabled(has_cards)
-        self.reveal_button.setEnabled(in_session and not self.definition_visible)
-        self.next_button.setEnabled(in_session and self.definition_visible)
-        self.update_status()
-
-    def closeEvent(self, event):
-        """Overrides the default close event to check for unsaved changes."""
-        if self.dirty_flag:
-            reply = QMessageBox.question(self, 'Unsaved Changes',
-                                       "You have unsaved changes. Save before exiting?",
-                                       QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
-                                       QMessageBox.Save)
-            if reply == QMessageBox.Save:
-                if not self.flashcards: # Should not happen if dirty_flag is true, but good check
-                    event.accept()
-                    return
-                if not save_flashcards_data(self.flashcards, FLASHCARD_FILE):
-                    event.ignore() # Don't close if save failed
-                    return
-                event.accept()
-            elif reply == QMessageBox.Discard:
-                event.accept()
-            else: # Cancel
-                event.ignore()
+    if current_cards:
+        if 0 <= card_index < len(current_cards):
+            word, _ = current_cards[card_index]
+            word_label.config(text=word)
+            definition_label.config(text='') # Hide definition when showing word
         else:
-            event.accept()
+            clear_flashcard_display()
+    else:
+        clear_flashcard_display()
 
-# --- Main Execution ---
+# Function to flip the current card and display its definition
+def flip_card():
+    global card_index
+    global current_cards
+
+    if current_cards:
+        if 0 <= card_index < len(current_cards):
+            _, definition = current_cards[card_index]
+            definition_label.config(text=definition)
+        else:
+            definition_label.config(text='')
+
+
+# Function to move to the next card
+def next_card():
+    global card_index
+    global current_cards
+
+    if current_cards:
+        card_index = min(card_index + 1, len(current_cards) -1)
+        show_card()
+
+# Function to move to the previous card
+def prev_card():
+    global card_index
+    global current_cards
+
+    if current_cards:
+        card_index = max(card_index - 1, 0)
+        show_card()
+
+# Function to shuffle the current flashcards
+def shuffle_cards():
+    global current_cards, card_index
+    if current_cards:
+        random.shuffle(current_cards)
+        card_index = 0 # Reset to the first card after shuffling
+        show_card()
+        messagebox.showinfo("Shuffle", "Cards have been shuffled!")
+    else:
+        messagebox.showinfo("Shuffle", "No cards to shuffle in the current set.")
+
+
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    main_win = FlashcardApp()
-    main_win.show()
-    sys.exit(app.exec_())
+    # Connect to the SQLite database and create tables
+    conn = sqlite3.connect('flashcards.db')
+    create_tables(conn)
+
+    # Create the main GUI window
+    root = tk.Tk()
+    from tkinter import PhotoImage
+    # Ensure the image file exists at this path or use a relative path
+    try:
+        icon = PhotoImage(file='D:\Downloads\CC15Flashcards\FlashMe.png')
+        root.iconphoto(True, icon)
+    except tk.TclError:
+        print("Warning: Icon file not found at D:\Downloads\CC15Flashcards\FlashMe.png")
+
+    root.title('FlashMe!')
+    root.geometry('500x550') # Increased height slightly to accommodate the card box and footer
+    root.resizable(False, False)
+
+    # Apply styling to the GUI elements
+    style = Style(theme='darkly')
+    style.configure('TLabel', font=('TkHeadingFont', 18))
+    style.configure('TButton', font=('TkDefaultFont', 16))
+
+    # Set up variables for storing user input
+    set_name_var = tk.StringVar()
+    word_var = tk.StringVar()
+    definition_var = tk.StringVar()
+
+    # Create a notebook widget to manage tabs
+    notebook = ttk.Notebook(root)
+    notebook.pack(fill='both', expand=True, padx=10, pady=10) # Added padding
+
+    # Create the "Create Set" tab and its content
+    create_set_frame = ttk.Frame(notebook, padding="10") # Added padding
+    notebook.add(create_set_frame, text='Create Set')
+
+    # Label and Entry widgets for entering set name, word and definition
+    ttk.Label(create_set_frame, text='Set Name').pack(padx=5, pady=5)
+    ttk.Entry(create_set_frame, textvariable=set_name_var, width=30).pack(padx=5, pady=5)
+
+    ttk.Label(create_set_frame, text='Question').pack(padx=5, pady=5)
+    ttk.Entry(create_set_frame, textvariable=word_var, width=30).pack(padx=5, pady=5)
+
+    ttk.Label(create_set_frame, text='Definition').pack(padx=5, pady=5)
+    ttk.Entry(create_set_frame, textvariable=definition_var, width=30).pack(padx=5, pady=5)
+
+    # Button to add a word to the set
+    ttk.Button(create_set_frame, text='Add Question', command=add_word, bootstyle='light').pack(padx=5, pady=10)
+
+    # Button to save the set
+    ttk.Button(create_set_frame, text='Save Set', command=create_set, bootstyle='light').pack(padx=5, pady=10)
+
+    # Create the "Select Set" tab and its content
+    select_set_frame = ttk.Frame(notebook, padding="10") # Added padding
+    notebook.add(select_set_frame, text="Select Set")
+
+    # Combobox widget for selecting existing flashcard sets
+    sets_combobox = ttk.Combobox(select_set_frame, state='readonly', width=27) # Adjusted width
+    sets_combobox.pack(padx=5, pady=20) # Adjusted padding
+
+    # Button to select a set
+    ttk.Button(select_set_frame, text='Select Set', command=select_set, bootstyle='light').pack(padx=5, pady=5)
+
+    # Button to delete a set
+    ttk.Button(select_set_frame, text='Delete Set', command=delete_selected_set, bootstyle='light').pack(padx=5, pady=5)
+
+    # Create the "Learn mode" tab and its content
+    flashcards_frame = ttk.Frame(notebook, padding="10") # Added padding
+    notebook.add(flashcards_frame, text='Learn Mode')
+
+    # Initialize variables for tracking card index and current cards
+    card_index = 0
+    current_cards = [] # Initialize current_cards list
+
+    # Frame to act as the "card" box
+    # Enhanced styling for a more card-like appearance
+    card_box_frame = ttk.Frame(flashcards_frame, relief='raised', borderwidth=3, padding="40") # Increased borderwidth and padding
+    card_box_frame.pack(pady=20, fill='both', expand=True) # Added padding and expand
+
+    # Label to display the word on flashcards
+    word_label = ttk.Label(card_box_frame, text='', font=('TkHeadingFont', 24), wraplength=400, anchor='center', justify='center') # Added anchor and justify
+    word_label.pack(padx=10, pady=10)
+
+    # Label to display the definition on flashcards
+    definition_label = ttk.Label(card_box_frame, text='', wraplength=400, anchor='center', justify='center') # Added anchor and justify
+    definition_label.pack(padx=10, pady=10)
+
+    # Frame for the control buttons
+    control_frame = ttk.Frame(flashcards_frame)
+    control_frame.pack(pady=10)
+
+    # Button to flip the flashcard
+    ttk.Button(control_frame, text='Flip', command=flip_card, bootstyle='light').pack(side='left', padx=5)
+
+    # Button to view the previous flashcard
+    ttk.Button(control_frame, text='Previous', command=prev_card, bootstyle='light').pack(side='left', padx=5)
+
+    # Button to view the next flashcard
+    ttk.Button(control_frame, text='Next', command=next_card, bootstyle='light').pack(side='left', padx=5)
+
+    # Button to shuffle the cards
+    ttk.Button(control_frame, text='Shuffle', command=shuffle_cards, bootstyle='light').pack(side='left', padx=5)
+
+
+    populate_sets_combobox()
+
+    # Added error handling for the footer image loading
+    try:
+        # Open and resize the image
+        original_image = Image.open('D:\Downloads\CC15Flashcards\FlashMe2.png')
+        resized_image = original_image.resize((75, 75))  # Resize to fit at bottom
+        footer_image = ImageTk.PhotoImage(resized_image)
+
+        # Create and pack a label for the image
+        footer_label = ttk.Label(root, image=footer_image)
+        footer_label.image = footer_image  # Keep a reference to avoid garbage collection
+        footer_label.pack(side='bottom', pady=10)
+    except FileNotFoundError:
+        print("Warning: Footer image file not found at D:\Downloads\CC15Flashcards\FlashMe2.png")
+    except ImportError:
+        print("Warning: Pillow library not found. Install it with 'pip install Pillow' to display the footer image.")
+
+
+    root.mainloop()
